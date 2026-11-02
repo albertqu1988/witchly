@@ -127,13 +127,31 @@ echo "HTTP $http_code"
 
 body_lower=$(echo "$body" | tr '[:upper:]' '[:lower:]')
 
+body_lower=$(echo "$body" | tr '[:upper:]' '[:lower:]')
+
+# HTTP 200 正常成功
 if [[ "$http_code" == "200" ]]; then
   exit 0
 fi
+
+# 今日已签过 / 冷却未到
 if [[ "$body_lower" == *"too early"* || "$body_lower" == *"already"* ]]; then
+  echo "今日已签到或尚未到冷却时间，正常跳过。"
   exit 0
 fi
+
 if [[ "$http_code" == "400" && "$body_lower" == *'"ritual failed"'* ]]; then
+  echo "Ritual 已完成过，视为成功。"
   exit 0
 fi
+
+# 平台要求 Linkvertise 验证
+if [[ "$http_code" == "410" || "$body" == *"LV_RITUAL_REQUIRED"* ]]; then
+  echo "" >&2
+  echo "⚠️ [平台机制更新] Witchly 现已改版：每日签到已被绑定至 Linkvertise 广告验证任务 (LV_RITUAL_REQUIRED)。" >&2
+  echo "⚠️ 平台已禁用直接 API 签到，请前往控制台网页端完成一次 Linkvertise 任务。" >&2
+  exit 1
+fi
+
 exit 1
+
