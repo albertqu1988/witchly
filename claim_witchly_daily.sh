@@ -19,7 +19,7 @@ fi
 DAILY_URL=${DAILY_URL:-https://dash.witchly.host/api/earn/daily}
 METHOD=${DAILY_METHOD:-POST}
 REFERER=${DAILY_REFERER:-https://dash.witchly.host/}
-USER_AGENT=${DAILY_USER_AGENT:-Mozilla/5.0}
+USER_AGENT=${DAILY_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36}
 HEADERS_JSON=${DAILY_EXTRA_HEADERS_JSON:-}
 BODY_JSON=${DAILY_BODY_JSON:-}
 
@@ -105,7 +105,7 @@ curl_args=(
   -D "$headers_file"
   -o "$body_file"
   -w "%{http_code}"
-  "${CURL_PROXY_ARGS[@]}"
+  ${CURL_PROXY_ARGS[@]+"${CURL_PROXY_ARGS[@]}"}
 )
 
 if [[ -n "$HEADERS_JSON" ]]; then
@@ -125,13 +125,15 @@ body=$(cat "$body_file")
 echo "HTTP $http_code"
 [[ -n "$body" ]] && echo "$body"
 
+body_lower=$(echo "$body" | tr '[:upper:]' '[:lower:]')
+
 if [[ "$http_code" == "200" ]]; then
   exit 0
 fi
-if [[ "$body" == *"Too early"* || "$body" == *"already"* ]]; then
+if [[ "$body_lower" == *"too early"* || "$body_lower" == *"already"* ]]; then
   exit 0
 fi
-if [[ "$http_code" == "400" && "$body" == *'"error":"Ritual failed"'* ]]; then
+if [[ "$http_code" == "400" && "$body_lower" == *'"ritual failed"'* ]]; then
   exit 0
 fi
 exit 1
