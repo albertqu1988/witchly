@@ -2,8 +2,8 @@ name: Witchly Server Renew
 
 on:
   schedule:
-    - cron: '10 8 * * *'   # 每天 UTC 00:10（北京时间 08:10）
-  workflow_dispatch:         # 支持手动触发          # 支持手动触发
+    - cron: '20 1 */3 * *'   # 每 3 天 UTC 01:20（北京时间 09:20）
+  workflow_dispatch:         # 支持手动触发
 
 jobs:
   renew:
@@ -13,26 +13,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install zsh
-        run: sudo apt-get install -y zsh
+      # ── 安装 gost（若配置了 WITCHLY_PROXY_NODE） ──────────────────
+      - name: Install gost
+        if: env.PROXY_NODE != ''
+        env:
+          PROXY_NODE: ${{ secrets.WITCHLY_PROXY_NODE }}
+        run: |
+          GOST_VER="3.0.0-rc10"
+          ARCH=$(uname -m)
+          case "$ARCH" in
+            x86_64)  GOST_ARCH="amd64" ;;
+            aarch64) GOST_ARCH="arm64" ;;
+            *)       GOST_ARCH="amd64" ;;
+          esac
+          curl -sSL "https://github.com/go-gost/gost/releases/download/v${GOST_VER}/gost_${GOST_VER}_linux_${GOST_ARCH}.tar.gz" \
+            -o /tmp/gost.tar.gz
+          tar -xzf /tmp/gost.tar.gz -C /tmp
+          chmod +x /tmp/gost
+          sudo mv /tmp/gost /usr/local/bin/gost
+          gost -V
 
       # ── 执行续期脚本，完整捕获输出 ──────────────────────────────
       - name: Run renew
         id: renew
         env:
-          RENEW_URL:    ${{ secrets.RENEW_URL }}
+          SERVER_ID:    ${{ secrets.SERVER_ID || 'cmul39l6v0dm401e0s2leu1kq' }}
+          RENEW_URL:    ${{ secrets.RENEW_URL || 'https://dash.witchly.host/api/servers/cmul39l6v0dm401e0s2leu1kq/renew' }}
           RENEW_COOKIE: ${{ secrets.DAILY_COOKIE }}
+          PROXY_NODE:   ${{ secrets.WITCHLY_PROXY_NODE }}
         run: |
           set +e
-
-          # 用 printf %q 转义特殊字符，避免 Cookie 被 zsh 当命令执行
-          printf 'RENEW_URL=%q\n' "$RENEW_URL" >  .env.witchlyhost
-          printf 'RENEW_COOKIE=%q\n' "$RENEW_COOKIE" >> .env.witchlyhost
-
-          OUTPUT=$(zsh ./renew_witchlyhost.sh 2>&1)
+          OUTPUT=$(bash ./renew_witchlyhost.sh 2>&1)
           EXIT_CODE=$?
-
-          rm -f .env.witchlyhost
 
           echo "output<<EOF" >> "$GITHUB_OUTPUT"
           echo "$OUTPUT"     >> "$GITHUB_OUTPUT"
@@ -67,9 +79,13 @@ jobs:
           RENEW_OUTPUT:  ${{ steps.renew.outputs.output }}
           RUN_URL:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then
+            echo "Telegram credentials not provided, skipping notification."
+            exit 0
+          fi
           NOW=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
           # 判断是"续期成功"还是"未到期跳过"
-          if echo "$RENEW_OUTPUT" | grep -q "Too early\|skipped"; then
+          if echo "$RENEW_OUTPUT" | grep -qi "Too early\|skipped"; then
             ICON="⏭️"
             TITLE="Witchly 服务器未到期，跳过续期"
           else
@@ -94,6 +110,10 @@ jobs:
           EXIT_CODE:     ${{ steps.renew.outputs.exit_code }}
           RUN_URL:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then
+            echo "Telegram credentials not provided, skipping notification."
+            exit 0
+          fi
           NOW=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
           MESSAGE=$(printf '❌ *Witchly 服务器续期失败*\n\n📅 时间：%s CST\n💥 退出码：%s\n📋 输出：\n```\n%s\n```\n🔗 [查看完整日志](%s)' \
             "$NOW" "$EXIT_CODE" "$RENEW_OUTPUT" "$RUN_URL")
