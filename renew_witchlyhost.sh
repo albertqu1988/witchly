@@ -1,47 +1,124 @@
-#!/bin/zsh
-
+#!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=${0:A:h}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env.witchlyhost"
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "Missing config: $ENV_FILE" >&2
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
+# ── 默认配置与环境变量 ─────────────────────────────────────────────
+SERVER_ID="${SERVER_ID:-cmul39l6v0dm401e0s2leu1kq}"
+RENEW_URL="${RENEW_URL:-https://dash.witchly.host/api/servers/${SERVER_ID}/renew}"
+RENEW_COOKIE="${RENEW_COOKIE:-${DAILY_COOKIE:-}}"
+REFERER="${RENEW_REFERER:-https://dash.witchly.host/}"
+USER_AGENT="${RENEW_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36}"
+
+# ── 必要变量检查 ─────────────────────────────────────────────────
+if [[ -z "${RENEW_COOKIE:-}" ]]; then
+  echo "RENEW_COOKIE (or DAILY_COOKIE) is empty." >&2
+  echo "Provide it via .env.witchlyhost or environment variables." >&2
   exit 1
 fi
 
-source "$ENV_FILE"
+# ── SOCKS5 代理（格式: user:pass@host:port 或 host:port） ────────
+PROXY_NODE=${PROXY_NODE:-}
+GOST_LOCAL_PORT=18081
+GOST_PID=""
+CURL_PROXY_ARGS=()
 
-if [[ -z "${RENEW_URL:-}" || -z "${RENEW_COOKIE:-}" ]]; then
-  echo "RENEW_URL or RENEW_COOKIE is empty" >&2
-  exit 1
-fi
+start_gost() {
+  local node="$1"
+  if ! command -v gost &>/dev/null; then
+    echo "[proxy] gost not found, installing..." >&2
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+      x86_64)  GOST_ARCH="amd64" ;;
+      aarch64) GOST_ARCH="arm64" ;;
+      *)       GOST_ARCH="amd64" ;;
+    esac
+    local GOST_VER="3.0.0-rc10"
+    local GOST_URL="https://github.com/go-gost/gost/releases/download/v${GOST_VER}/gost_${GOST_VER}_linux_${GOST_ARCH}.tar.gz"
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    curl -sSL "$GOST_URL" -o "$tmpdir/gost.tar.gz"
+    tar -xzf "$tmpdir/gost.tar.gz" -C "$tmpdir"
+    chmod +x "$tmpdir/gost"
+    sudo mv "$tmpdir/gost" /usr/local/bin/gost 2>/dev/null || mv "$tmpdir/gost" "$HOME/.local/bin/gost"
+    rm -rf "$tmpdir"
+    echo "[proxy] gost installed" >&2
+  fi
+
+  echo "[proxy] starting gost -> socks5://${node}" >&2
+  gost -L "http://:${GOST_LOCAL_PORT}" -F "socks5://${node}" &
+  GOST_PID=$!
+  sleep 2
+
+  if ! kill -0 "$GOST_PID" 2>/dev/null; then
+    echo "[proxy] gost failed to start" >&2
+    GOST_PID=""
+    return 1
+  fi
+  echo "[proxy] gost running (pid=$GOST_PID), local http proxy :${GOST_LOCAL_PORT}" >&2
+}
+
+cleanup() {
+  if [[ -n "$GOST_PID" ]]; then
+    kill "$GOST_PID" 2>/dev/null || true
+    echo "[proxy] gost stopped" >&2
+  fi
+  rm -f "$headers_file" "$body_file"
+}
 
 headers_file=$(mktemp)
 body_file=$(mktemp)
-trap 'rm -f "$headers_file" "$body_file"' EXIT
+trap cleanup EXIT
 
+if [[ -n "$PROXY_NODE" ]]; then
+  if start_gost "$PROXY_NODE"; then
+    CURL_PROXY_ARGS=(--proxy "http://127.0.0.1:${GOST_LOCAL_PORT}")
+    echo "[proxy] curl will route through socks5 node" >&2
+  else
+    echo "[proxy] WARNING: falling back to direct connection" >&2
+  fi
+else
+  echo "[proxy] PROXY_NODE not set, using direct connection" >&2
+fi
+
+echo "Renewing server at: $RENEW_URL"
+
+# ── 执行续期请求 ──────────────────────────────────────────────────
 http_code=$(
   curl -sS -X POST "$RENEW_URL" \
     -H "cookie: $RENEW_COOKIE" \
+    -H "referer: $REFERER" \
+    -H "user-agent: $USER_AGENT" \
     -D "$headers_file" \
     -o "$body_file" \
-    -w '%{http_code}'
+    -w '%{http_code}' \
+    ${CURL_PROXY_ARGS[@]+"${CURL_PROXY_ARGS[@]}"}
 )
 
 body=$(cat "$body_file")
 
+echo "HTTP $http_code"
+[[ -n "$body" ]] && echo "$body"
+
+# HTTP 200 续期成功
 if [[ "$http_code" == "200" ]]; then
   echo "Renewal request succeeded."
-  [[ -n "$body" ]] && echo "$body"
   exit 0
 fi
 
-if [[ "$http_code" == "400" && "$body" == *"Too early"* ]]; then
+# 400 且提示 Too early 或未到期，视为正常跳过
+body_lower=$(echo "$body" | tr '[:upper:]' '[:lower:]')
+if [[ "$http_code" == "400" && ("$body_lower" == *"too early"* || "$body_lower" == *"already"*) ]]; then
   echo "Renewal skipped: $body"
   exit 0
 fi
 
 echo "Renewal request failed with HTTP $http_code." >&2
-[[ -n "$body" ]] && echo "$body" >&2
 exit 1
