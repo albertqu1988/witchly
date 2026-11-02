@@ -13,8 +13,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 安装 gost ─────────────────────────────────────────────────
+      # ── 安装 gost（若配置了 WITCHLY_PROXY_NODE） ──────────────────
       - name: Install gost
+        if: env.PROXY_NODE != ''
+        env:
+          PROXY_NODE: ${{ secrets.WITCHLY_PROXY_NODE }}
         run: |
           GOST_VER="3.0.0-rc10"
           ARCH=$(uname -m)
@@ -42,7 +45,6 @@ jobs:
           DAILY_EXTRA_HEADERS_JSON: ${{ secrets.DAILY_EXTRA_HEADERS_JSON }}
           DAILY_BODY_JSON:          ${{ secrets.DAILY_BODY_JSON }}
           # 代理节点，格式: user:pass@host:port 或 host:port
-          # 多节点用英文逗号分隔（脚本会逐个尝试）
           PROXY_NODE:               ${{ secrets.WITCHLY_PROXY_NODE }}
         run: |
           set +e
@@ -81,6 +83,10 @@ jobs:
           CLAIM_OUTPUT: ${{ steps.claim.outputs.output }}
           RUN_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then
+            echo "Telegram credentials not provided, skipping notification."
+            exit 0
+          fi
           NOW=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
           MESSAGE=$(printf '✅ *Witchly 每日签到成功*\n\n📅 时间：%s CST\n📋 输出：\n```\n%s\n```\n🔗 [查看本次运行](%s)' \
             "$NOW" "$CLAIM_OUTPUT" "$RUN_URL")
@@ -100,6 +106,10 @@ jobs:
           EXIT_CODE:    ${{ steps.claim.outputs.exit_code }}
           RUN_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then
+            echo "Telegram credentials not provided, skipping notification."
+            exit 0
+          fi
           NOW=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
 
           MESSAGE=$(printf '❌ *Witchly 每日签到失败*\n\n📅 时间：%s CST\n💥 退出码：%s\n📋 输出：\n```\n%s\n```\n🔗 [查看完整日志](%s)' \
